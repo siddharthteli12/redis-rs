@@ -752,7 +752,10 @@ impl Sentinel {
         self.try_all_sentinels(sentinel_masters_cmd())
     }
 
-    fn get_sentinel_replicas(
+    /// Returns the list of replica nodes currently known to the Sentinel.
+    /// The list may become outdated as the Sentinel's state changes
+    /// (e.g., when replicas are added, removed, or go offline).
+    pub fn get_sentinel_replicas(
         &mut self,
         service_name: &str,
     ) -> RedisResult<Vec<HashMap<String, String>>> {
@@ -872,7 +875,10 @@ impl Sentinel {
         self.async_try_all_sentinels(sentinel_masters_cmd()).await
     }
 
-    async fn async_get_sentinel_replicas(
+    /// Returns the list of replica nodes currently known to the Sentinel.
+    /// The list may become outdated as the Sentinel's state changes
+    /// (e.g., when replicas are added, removed, or go offline).
+    pub async fn async_get_sentinel_replicas(
         &mut self,
         service_name: &str,
     ) -> RedisResult<Vec<HashMap<String, String>>> {
