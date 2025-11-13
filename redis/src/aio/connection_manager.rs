@@ -2,17 +2,21 @@ use super::{AsyncPushSender, HandleContainer, RedisFuture};
 #[cfg(feature = "cache-aio")]
 use crate::caching::CacheManager;
 use crate::{
-    aio::{check_resp3, ConnectionLike, MultiplexedConnection, Runtime},
+    aio::{ConnectionLike, MultiplexedConnection, Runtime},
+    check_resp3,
+    client::{DEFAULT_CONNECTION_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT},
     cmd,
+    errors::RedisError,
     subscription_tracker::{SubscriptionAction, SubscriptionTracker},
-    types::{RedisError, RedisResult, Value},
-    AsyncConnectionConfig, Client, Cmd, Pipeline, ProtocolVersion, PushInfo, PushKind, ToRedisArgs,
+    types::{RedisResult, Value},
+    AsyncConnectionConfig, Client, Cmd, Pipeline, PushInfo, PushKind, ToRedisArgs,
 };
 use arc_swap::ArcSwap;
 use backon::{ExponentialBuilder, Retryable};
 use futures_channel::oneshot;
 use futures_util::future::{self, BoxFuture, FutureExt, Shared};
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tokio::sync::Mutex;
 
@@ -23,24 +27,21 @@ type OptionalPushSender = Option<Arc<dyn AsyncPushSender>>;
 pub struct ConnectionManagerConfig {
     /// The resulting duration is calculated by taking the base to the `n`-th power,
     /// where `n` denotes the number of past attempts.
-    exponent_base: u64,
-    /// A multiplicative factor that will be applied to the retry delay.
-    ///
-    /// For example, using a factor of `1000` will make each delay in units of seconds.
-    factor: u64,
+    exponent_base: f32,
+    /// The minimal delay for reconnection attempts
+    min_delay: Duration,
+    /// Apply a maximum delay between connection attempts. The delay between attempts won't be longer than max_delay milliseconds.
+    max_delay: Option<Duration>,
     /// number_of_retries times, with an exponentially increasing delay
     number_of_retries: usize,
-    /// Apply a maximum delay between connection attempts. The delay between attempts won't be longer than max_delay milliseconds.
-    max_delay: Option<u64>,
     /// The new connection will time out operations after `response_timeout` has passed.
-    response_timeout: Option<std::time::Duration>,
+    response_timeout: Option<Duration>,
     /// Each connection attempt to the server will time out after `connection_timeout`.
-    connection_timeout: Option<std::time::Duration>,
+    connection_timeout: Option<Duration>,
     /// sender channel for push values
     push_sender: Option<Arc<dyn AsyncPushSender>>,
     /// if true, the manager should resubscribe automatically to all pubsub channels after reconnect.
     resubscribe_automatically: bool,
-    tcp_settings: crate::io::tcp::TcpSettings,
     #[cfg(feature = "cache-aio")]
     pub(crate) cache_config: Option<crate::caching::CacheConfig>,
 }
@@ -49,22 +50,21 @@ impl std::fmt::Debug for ConnectionManagerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         let &Self {
             exponent_base,
-            factor,
+            min_delay,
             number_of_retries,
             max_delay,
             response_timeout,
             connection_timeout,
             push_sender,
             resubscribe_automatically,
-            tcp_settings,
             #[cfg(feature = "cache-aio")]
             cache_config,
         } = &self;
         let mut str = f.debug_struct("ConnectionManagerConfig");
         str.field("exponent_base", &exponent_base)
-            .field("factor", &factor)
-            .field("number_of_retries", &number_of_retries)
+            .field("min_delay", &min_delay)
             .field("max_delay", &max_delay)
+            .field("number_of_retries", &number_of_retries)
             .field("response_timeout", &response_timeout)
             .field("connection_timeout", &connection_timeout)
             .field("resubscribe_automatically", &resubscribe_automatically)
@@ -75,8 +75,7 @@ impl std::fmt::Debug for ConnectionManagerConfig {
                 } else {
                     &"not set"
                 },
-            )
-            .field("tcp_settings", &tcp_settings);
+            );
 
         #[cfg(feature = "cache-aio")]
         str.field("cache_config", &cache_config);
@@ -86,66 +85,105 @@ impl std::fmt::Debug for ConnectionManagerConfig {
 }
 
 impl ConnectionManagerConfig {
-    const DEFAULT_CONNECTION_RETRY_EXPONENT_BASE: u64 = 2;
-    const DEFAULT_CONNECTION_RETRY_FACTOR: u64 = 100;
+    const DEFAULT_CONNECTION_RETRY_EXPONENT_BASE: f32 = 2.0;
+    const DEFAULT_CONNECTION_RETRY_MIN_DELAY: Duration = Duration::from_millis(100);
     const DEFAULT_NUMBER_OF_CONNECTION_RETRIES: usize = 6;
-    const DEFAULT_RESPONSE_TIMEOUT: Option<std::time::Duration> = None;
-    const DEFAULT_CONNECTION_TIMEOUT: Option<std::time::Duration> = None;
 
     /// Creates a new instance of the options with nothing set
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// A multiplicative factor that will be applied to the retry delay.
+    /// Returns the minimum delay between connection attempts.
+    pub fn min_delay(&self) -> Duration {
+        self.min_delay
+    }
+
+    /// Returns the maximum delay between connection attempts.
+    pub fn max_delay(&self) -> Option<Duration> {
+        self.max_delay
+    }
+
+    /// Returns the base used for calculating the exponential backoff between retries.
+    pub fn exponent_base(&self) -> f32 {
+        self.exponent_base
+    }
+
+    /// Returns the maximum number of connection retry attempts.
+    pub fn number_of_retries(&self) -> usize {
+        self.number_of_retries
+    }
+
+    /// Returns the timeout applied to command responses.
     ///
-    /// For example, using a factor of `1000` will make each delay in units of seconds.
-    pub fn set_factor(mut self, factor: u64) -> ConnectionManagerConfig {
-        self.factor = factor;
+    /// If `None`, responses do not time out.
+    pub fn response_timeout(&self) -> Option<Duration> {
+        self.response_timeout
+    }
+
+    /// Returns the timeout applied to establishing a new connection.
+    ///
+    /// If `None`, connection attempts to do not time out.
+    pub fn connection_timeout(&self) -> Option<Duration> {
+        self.connection_timeout
+    }
+
+    /// Returns `true` if automatic resubscription is enabled after reconnecting.
+    pub fn automatic_resubscription(&self) -> bool {
+        self.resubscribe_automatically
+    }
+
+    /// Returns the current cache configuration, if caching is enabled.
+    #[cfg(feature = "cache-aio")]
+    pub fn cache_config(&self) -> Option<&crate::caching::CacheConfig> {
+        self.cache_config.as_ref()
+    }
+
+    /// Set the minimal delay for reconnect attempts.
+    pub fn set_min_delay(mut self, min_delay: Duration) -> ConnectionManagerConfig {
+        self.min_delay = min_delay;
         self
     }
 
     /// Apply a maximum delay between connection attempts. The delay between attempts won't be longer than max_delay milliseconds.
-    pub fn set_max_delay(mut self, time: u64) -> ConnectionManagerConfig {
+    pub fn set_max_delay(mut self, time: Duration) -> ConnectionManagerConfig {
         self.max_delay = Some(time);
         self
     }
 
     /// The resulting duration is calculated by taking the base to the `n`-th power,
     /// where `n` denotes the number of past attempts.
-    pub fn set_exponent_base(mut self, base: u64) -> ConnectionManagerConfig {
+    pub fn set_exponent_base(mut self, base: f32) -> ConnectionManagerConfig {
         self.exponent_base = base;
         self
     }
 
-    /// number_of_retries times, with an exponentially increasing delay
+    /// number_of_retries times, with an exponentially increasing delay.
     pub fn set_number_of_retries(mut self, amount: usize) -> ConnectionManagerConfig {
         self.number_of_retries = amount;
         self
     }
 
     /// The new connection will time out operations after `response_timeout` has passed.
-    pub fn set_response_timeout(
-        mut self,
-        duration: std::time::Duration,
-    ) -> ConnectionManagerConfig {
-        self.response_timeout = Some(duration);
+    ///
+    /// Set `None` if you don't want requests to time out.
+    pub fn set_response_timeout(mut self, duration: Option<Duration>) -> ConnectionManagerConfig {
+        self.response_timeout = duration;
         self
     }
 
     /// Each connection attempt to the server will time out after `connection_timeout`.
-    pub fn set_connection_timeout(
-        mut self,
-        duration: std::time::Duration,
-    ) -> ConnectionManagerConfig {
-        self.connection_timeout = Some(duration);
+    ///
+    /// Set `None` if you don't want the connection attempt to time out.
+    pub fn set_connection_timeout(mut self, duration: Option<Duration>) -> ConnectionManagerConfig {
+        self.connection_timeout = duration;
         self
     }
 
     /// Sets sender sender for push values.
     ///
     /// The sender can be a channel, or an arbitrary function that handles [crate::PushInfo] values.
-    /// This will fail client creation if the connection isn't configured for RESP3 communications via the [crate::RedisConnectionInfo::protocol] field.
+    /// This will fail client creation if the connection isn't configured for RESP3 communications via the [crate::RedisConnectionInfo::set_protocol] function.
     ///
     /// # Examples
     ///
@@ -178,14 +216,6 @@ impl ConnectionManagerConfig {
         self
     }
 
-    /// Set the behavior of the underlying TCP connection.
-    pub fn set_tcp_settings(self, tcp_settings: crate::io::tcp::TcpSettings) -> Self {
-        Self {
-            tcp_settings,
-            ..self
-        }
-    }
-
     /// Set the cache behavior.
     #[cfg(feature = "cache-aio")]
     pub fn set_cache_config(self, cache_config: crate::caching::CacheConfig) -> Self {
@@ -200,14 +230,13 @@ impl Default for ConnectionManagerConfig {
     fn default() -> Self {
         Self {
             exponent_base: Self::DEFAULT_CONNECTION_RETRY_EXPONENT_BASE,
-            factor: Self::DEFAULT_CONNECTION_RETRY_FACTOR,
-            number_of_retries: Self::DEFAULT_NUMBER_OF_CONNECTION_RETRIES,
-            response_timeout: Self::DEFAULT_RESPONSE_TIMEOUT,
-            connection_timeout: Self::DEFAULT_CONNECTION_TIMEOUT,
+            min_delay: Self::DEFAULT_CONNECTION_RETRY_MIN_DELAY,
             max_delay: None,
+            number_of_retries: Self::DEFAULT_NUMBER_OF_CONNECTION_RETRIES,
+            response_timeout: DEFAULT_RESPONSE_TIMEOUT,
+            connection_timeout: DEFAULT_CONNECTION_TIMEOUT,
             push_sender: None,
             resubscribe_automatically: false,
-            tcp_settings: Default::default(),
             #[cfg(feature = "cache-aio")]
             cache_config: None,
         }
@@ -263,11 +292,17 @@ struct Internals {
 #[derive(Clone)]
 pub struct ConnectionManager(Arc<Internals>);
 
-/// A `RedisResult` that can be cloned because `RedisError` is behind an `Arc`.
-type CloneableRedisResult<T> = Result<T, Arc<RedisError>>;
+impl std::fmt::Debug for ConnectionManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionManager")
+            .field("client", &self.0.client)
+            .field("retry_strategy", &self.0.retry_strategy)
+            .finish()
+    }
+}
 
-/// Type alias for a shared boxed future that will resolve to a `CloneableRedisResult`.
-type SharedRedisFuture<T> = Shared<BoxFuture<'static, CloneableRedisResult<T>>>;
+/// Type alias for a shared boxed future that will resolve to a `RedisResult`.
+type SharedRedisFuture<T> = Shared<BoxFuture<'static, RedisResult<T>>>;
 
 /// Handle a command result. If the connection was dropped, reconnect.
 macro_rules! reconnect_if_dropped {
@@ -311,61 +346,7 @@ impl ConnectionManager {
     ///
     /// In case of reconnection issues, the manager will retry reconnection
     /// number_of_retries times, with an exponentially increasing delay, calculated as
-    /// rand(0 .. factor * (exponent_base ^ current-try)).
-    #[deprecated(note = "Use `new_with_config`")]
-    pub async fn new_with_backoff(
-        client: Client,
-        exponent_base: u64,
-        factor: u64,
-        number_of_retries: usize,
-    ) -> RedisResult<Self> {
-        let config = ConnectionManagerConfig::new()
-            .set_exponent_base(exponent_base)
-            .set_factor(factor)
-            .set_number_of_retries(number_of_retries);
-        Self::new_with_config(client, config).await
-    }
-
-    /// Connect to the server and store the connection inside the returned `ConnectionManager`.
-    ///
-    /// This requires the `connection-manager` feature, which will also pull in
-    /// the Tokio executor.
-    ///
-    /// In case of reconnection issues, the manager will retry reconnection
-    /// number_of_retries times, with an exponentially increasing delay, calculated as
-    /// rand(0 .. factor * (exponent_base ^ current-try)).
-    ///
-    /// The new connection will time out operations after `response_timeout` has passed.
-    /// Each connection attempt to the server will time out after `connection_timeout`.
-    #[deprecated(note = "Use `new_with_config`")]
-    pub async fn new_with_backoff_and_timeouts(
-        client: Client,
-        exponent_base: u64,
-        factor: u64,
-        number_of_retries: usize,
-        response_timeout: std::time::Duration,
-        connection_timeout: std::time::Duration,
-    ) -> RedisResult<Self> {
-        let config = ConnectionManagerConfig::new()
-            .set_exponent_base(exponent_base)
-            .set_factor(factor)
-            .set_number_of_retries(number_of_retries)
-            .set_response_timeout(response_timeout)
-            .set_connection_timeout(connection_timeout);
-
-        Self::new_with_config(client, config).await
-    }
-
-    /// Connect to the server and store the connection inside the returned `ConnectionManager`.
-    ///
-    /// This requires the `connection-manager` feature, which will also pull in
-    /// the Tokio executor.
-    ///
-    /// In case of reconnection issues, the manager will retry reconnection
-    /// number_of_retries times, with an exponentially increasing delay, calculated as
-    /// rand(0 .. factor * (exponent_base ^ current-try)).
-    ///
-    /// Apply a maximum delay. No retry delay will be longer than this  ConnectionManagerConfig.max_delay` .
+    /// min(max_delay, rand(0 .. min_delay * (exponent_base ^ current-try))).
     ///
     /// The new connection will time out operations after `response_timeout` has passed.
     /// Each connection attempt to the server will time out after `connection_timeout`.
@@ -377,26 +358,22 @@ impl ConnectionManager {
         let runtime = Runtime::locate();
 
         if config.resubscribe_automatically && config.push_sender.is_none() {
-            return Err((crate::ErrorKind::ClientError, "Cannot set resubscribe_automatically without setting a push sender to receive messages.").into());
+            return Err((crate::ErrorKind::Client, "Cannot set resubscribe_automatically without setting a push sender to receive messages.").into());
         }
 
         let mut retry_strategy = ExponentialBuilder::default()
-            .with_factor(config.factor as f32)
+            .with_factor(config.exponent_base)
+            .with_min_delay(config.min_delay)
             .with_max_times(config.number_of_retries)
             .with_jitter();
         if let Some(max_delay) = config.max_delay {
-            retry_strategy =
-                retry_strategy.with_max_delay(std::time::Duration::from_millis(max_delay));
+            retry_strategy = retry_strategy.with_max_delay(max_delay);
         }
 
-        let mut connection_config = AsyncConnectionConfig::new();
-        if let Some(connection_timeout) = config.connection_timeout {
-            connection_config = connection_config.set_connection_timeout(connection_timeout);
-        }
-        if let Some(response_timeout) = config.response_timeout {
-            connection_config = connection_config.set_response_timeout(response_timeout);
-        }
-        connection_config = connection_config.set_tcp_settings(config.tcp_settings);
+        let mut connection_config = AsyncConnectionConfig::new()
+            .set_connection_timeout(config.connection_timeout)
+            .set_response_timeout(config.response_timeout);
+
         #[cfg(feature = "cache-aio")]
         let cache_manager = config
             .cache_config
@@ -424,7 +401,7 @@ impl ConnectionManager {
 
             connection_config =
                 connection_config.set_push_sender_internal(Arc::new(internal_sender));
-        } else if client.connection_info.redis.protocol != ProtocolVersion::RESP2 {
+        } else if client.connection_info.redis.protocol.supports_resp3() {
             let (internal_sender, internal_receiver) = unbounded_channel();
             components_for_reconnection_on_push = Some((internal_receiver, None));
 
@@ -461,7 +438,7 @@ impl ConnectionManager {
                 ))
                 .map_err(|_| {
                     crate::RedisError::from((
-                        crate::ErrorKind::ClientError,
+                        crate::ErrorKind::Client,
                         "Failed to set automatic resubscription",
                     ))
                 })?;
@@ -578,10 +555,7 @@ impl ConnectionManager {
     pub async fn send_packed_command(&mut self, cmd: &Cmd) -> RedisResult<Value> {
         // Clone connection to avoid having to lock the ArcSwap in write mode
         let guard = self.0.connection.load();
-        let connection_result = (**guard)
-            .clone()
-            .await
-            .map_err(|e| e.clone_mostly("Reconnecting failed"));
+        let connection_result = (**guard).clone().await.map_err(|e| e.clone());
         reconnect_if_io_error!(self, connection_result, guard);
         let result = connection_result?.send_packed_command(cmd).await;
         reconnect_if_dropped!(self, &result, guard);
@@ -599,10 +573,7 @@ impl ConnectionManager {
     ) -> RedisResult<Vec<Value>> {
         // Clone shared connection future to avoid having to lock the ArcSwap in write mode
         let guard = self.0.connection.load();
-        let connection_result = (**guard)
-            .clone()
-            .await
-            .map_err(|e| e.clone_mostly("Reconnecting failed"));
+        let connection_result = (**guard).clone().await.map_err(|e| e.clone());
         reconnect_if_io_error!(self, connection_result, guard);
         let result = connection_result?
             .send_packed_commands(cmd, offset, count)
@@ -634,6 +605,18 @@ impl ConnectionManager {
     /// This method is only available when the connection is using RESP3 protocol, and will return an error otherwise.
     /// It should be noted that unless [ConnectionManagerConfig::set_automatic_resubscription] was called,
     /// the subscription will be removed on a disconnect and must be re-subscribed.
+    ///  
+    /// ```rust,no_run
+    /// # async fn func() -> redis::RedisResult<()> {
+    /// let client = redis::Client::open("redis://127.0.0.1/?protocol=resp3").unwrap();
+    /// let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    /// let config = redis::aio::ConnectionManagerConfig::new().set_push_sender(tx);
+    /// let mut con = client.get_connection_manager_with_config(config).await?;
+    /// con.psubscribe("channel*_1").await?;
+    /// con.psubscribe(&["channel*_2", "channel*_3"]).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn subscribe(&mut self, channel_name: impl ToRedisArgs) -> RedisResult<()> {
         check_resp3!(self.0.client.connection_info.redis.protocol);
         let mut cmd = cmd("SUBSCRIBE");
@@ -666,6 +649,18 @@ impl ConnectionManager {
     /// This method is only available when the connection is using RESP3 protocol, and will return an error otherwise.
     /// It should be noted that unless [ConnectionManagerConfig::set_automatic_resubscription] was called,
     /// the subscription will be removed on a disconnect and must be re-subscribed.
+    ///
+    /// ```rust,no_run
+    /// # async fn func() -> redis::RedisResult<()> {
+    /// let client = redis::Client::open("redis://127.0.0.1/?protocol=resp3").unwrap();
+    /// let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    /// let config = redis::aio::ConnectionManagerConfig::new().set_push_sender(tx);
+    /// let mut con = client.get_connection_manager_with_config(config).await?;
+    /// con.psubscribe("channel*_1").await?;
+    /// con.psubscribe(&["channel*_2", "channel*_3"]).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn psubscribe(&mut self, channel_pattern: impl ToRedisArgs) -> RedisResult<()> {
         check_resp3!(self.0.client.connection_info.redis.protocol);
         let mut cmd = cmd("PSUBSCRIBE");

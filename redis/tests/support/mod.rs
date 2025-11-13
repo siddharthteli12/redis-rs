@@ -31,11 +31,11 @@ pub fn current_thread_runtime() -> tokio::runtime::Runtime {
 }
 
 #[cfg(feature = "aio")]
+#[derive(Clone, Copy)]
+#[non_exhaustive]
 pub enum RuntimeType {
     #[cfg(feature = "tokio-comp")]
     Tokio,
-    #[cfg(feature = "async-std-comp")]
-    AsyncStd,
     #[cfg(feature = "smol-comp")]
     Smol,
 }
@@ -62,7 +62,7 @@ where
     let check_future = futures_util::FutureExt::fuse(async {
         loop {
             if CHECK.load(Ordering::Relaxed) {
-                return Err((redis::ErrorKind::IoError, "panic was caught").into());
+                return Err((redis::ErrorKind::Io, "panic was caught").into());
             }
             futures_time::task::sleep(futures_time::time::Duration::from_millis(1)).await;
         }
@@ -77,8 +77,6 @@ where
     let res = match runtime {
         #[cfg(feature = "tokio-comp")]
         RuntimeType::Tokio => block_on_all_using_tokio(f),
-        #[cfg(feature = "async-std-comp")]
-        RuntimeType::AsyncStd => block_on_all_using_async_std(f),
         #[cfg(feature = "smol-comp")]
         RuntimeType::Smol => block_on_all_using_smol(f),
     };
@@ -91,56 +89,14 @@ where
     res
 }
 
-#[cfg(feature = "aio")]
-#[rstest::rstest]
-#[cfg_attr(feature = "tokio-comp", case::tokio(RuntimeType::Tokio))]
-#[cfg_attr(feature = "async-std-comp", case::async_std(RuntimeType::AsyncStd))]
-#[cfg_attr(feature = "smol-comp", case::smol(RuntimeType::Smol))]
-#[should_panic(expected = "Internal thread panicked")]
-fn test_block_on_all_panics_from_spawns(#[case] runtime: RuntimeType) {
-    use std::sync::{atomic::AtomicBool, Arc};
-
-    let slept = Arc::new(AtomicBool::new(false));
-    let slept_clone = slept.clone();
-    let _ = block_on_all(
-        async {
-            spawn(async move {
-                futures_time::task::sleep(futures_time::time::Duration::from_millis(1)).await;
-                slept_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-                panic!("As it should");
-            });
-
-            loop {
-                futures_time::task::sleep(futures_time::time::Duration::from_millis(2)).await;
-                if slept.load(std::sync::atomic::Ordering::Relaxed) {
-                    break;
-                }
-            }
-
-            Ok(())
-        },
-        runtime,
-    );
-}
-
 #[cfg(feature = "tokio-comp")]
 fn block_on_all_using_tokio<F>(f: F) -> F::Output
 where
     F: Future,
 {
-    #[cfg(any(feature = "async-std-comp", feature = "smol-comp"))]
+    #[cfg(feature = "smol-comp")]
     redis::aio::prefer_tokio().unwrap();
     current_thread_runtime().block_on(f)
-}
-
-#[cfg(feature = "async-std-comp")]
-fn block_on_all_using_async_std<F>(f: F) -> F::Output
-where
-    F: Future,
-{
-    #[cfg(any(feature = "tokio-comp", feature = "smol-comp"))]
-    redis::aio::prefer_async_std().unwrap();
-    async_std::task::block_on(f)
 }
 
 #[cfg(feature = "smol-comp")]
@@ -148,7 +104,7 @@ fn block_on_all_using_smol<F>(f: F) -> F::Output
 where
     F: Future,
 {
-    #[cfg(any(feature = "tokio-comp", feature = "async-std-comp"))]
+    #[cfg(feature = "tokio-comp")]
     redis::aio::prefer_smol().unwrap();
     smol::block_on(f)
 }
@@ -399,7 +355,18 @@ where
             // format is always 3 bytes
             write!(writer, "={}\r\n{}:{}\r\n", 3 + text.len(), format, text)
         }
-        Value::BigNumber(ref val) => write!(writer, "({val}\r\n"),
+        Value::BigNumber(ref val) => {
+            #[cfg(feature = "num-bigint")]
+            return write!(writer, "({val}\r\n");
+            #[cfg(not(feature = "num-bigint"))]
+            {
+                write!(writer, "(")?;
+                for byte in val {
+                    write!(writer, "{byte}")?;
+                }
+                write!(writer, "\r\n")
+            }
+        }
         Value::Push { ref kind, ref data } => {
             write!(writer, ">{}\r\n+{kind}\r\n", data.len() + 1)?;
             for val in data.iter() {
@@ -411,6 +378,7 @@ where
             Some(details) => write!(writer, "-{} {details}\r\n", err.code()),
             None => write!(writer, "-{}\r\n", err.code()),
         },
+        _ => panic!("unknown value {value:?}"),
     }
 }
 
@@ -438,6 +406,28 @@ pub fn is_major_version(expected_version: u16, version: Version) -> bool {
 pub fn is_version(expected_major_minor: (u16, u16), version: Version) -> bool {
     expected_major_minor.0 < version.0
         || (expected_major_minor.0 == version.0 && expected_major_minor.1 <= version.1)
+}
+
+// Redis version constants for version-gated tests
+pub const REDIS_VERSION_CE_8_0: Version = (8, 0, 0);
+pub const REDIS_VERSION_CE_8_2: Version = (8, 1, 240);
+
+/// Macro to run tests only if the Redis version meets the minimum requirement.
+/// If the version is insufficient, the test is skipped with a message.
+#[macro_export]
+macro_rules! run_test_if_version_supported {
+    ($minimum_required_version:expr) => {{
+        let ctx = $crate::support::TestContext::new();
+        let redis_version = ctx.get_version();
+
+        if redis_version < *$minimum_required_version {
+            eprintln!("Skipping the test because the current version of Redis {:?} doesn't match the minimum required version {:?}.",
+            redis_version, $minimum_required_version);
+            return;
+        }
+
+        ctx
+    }};
 }
 
 #[cfg(feature = "tls-rustls")]
@@ -501,24 +491,20 @@ pub(crate) fn build_single_client<T: redis::IntoConnectionInfo>(
 #[cfg(feature = "tls-rustls")]
 pub(crate) mod mtls_test {
     use super::*;
-    use redis::{cluster::ClusterClient, ConnectionInfo, RedisError};
+    use redis::{cluster::ClusterClient, ConnectionInfo, IntoConnectionInfo, RedisError};
 
     fn clean_node_info(nodes: &[ConnectionInfo]) -> Vec<ConnectionInfo> {
         let nodes = nodes
             .iter()
-            .map(|node| match node {
-                ConnectionInfo {
-                    addr: redis::ConnectionAddr::TcpTls { host, port, .. },
-                    redis,
-                } => ConnectionInfo {
-                    addr: redis::ConnectionAddr::TcpTls {
-                        host: host.to_owned(),
-                        port: *port,
-                        insecure: false,
-                        tls_params: None,
-                    },
-                    redis: redis.clone(),
-                },
+            .map(|node| match node.addr() {
+                redis::ConnectionAddr::TcpTls { host, port, .. } => redis::ConnectionAddr::TcpTls {
+                    host: host.to_owned(),
+                    port: *port,
+                    insecure: false,
+                    tls_params: None,
+                }
+                .into_connection_info()
+                .unwrap(),
                 _ => node.clone(),
             })
             .collect();
@@ -584,21 +570,4 @@ pub async fn kill_client_async(
         .unwrap();
 
     Ok(())
-}
-
-fn spawn<T>(fut: impl std::future::Future<Output = T> + Send + Sync + 'static)
-where
-    T: Send + 'static,
-{
-    match tokio::runtime::Handle::try_current() {
-        Ok(tokio_runtime) => {
-            tokio_runtime.spawn(fut);
-        }
-        #[cfg(feature = "async-std-comp")]
-        Err(_) => {
-            async_std::task::spawn(fut);
-        }
-        #[cfg(not(feature = "async-std-comp"))]
-        Err(_) => unreachable!(),
-    }
 }

@@ -1,22 +1,18 @@
 //! Defines types to use with the ACL commands.
 
-use crate::types::{
-    ErrorKind, FromRedisValue, RedisError, RedisResult, RedisWrite, ToRedisArgs, Value,
-};
+use crate::errors::ParsingError;
+use crate::types::{FromRedisValue, RedisWrite, ToRedisArgs, Value};
 
 macro_rules! not_convertible_error {
     ($v:expr, $det:expr) => {
-        RedisError::from((
-            ErrorKind::TypeError,
-            "Response type not convertible",
-            format!("{:?} (response was {:?})", $det, $v),
-        ))
+        ParsingError::from(format!("{:?} (response was {:?})", $det, $v))
     };
 }
 
 /// ACL rules are used in order to activate or remove a flag, or to perform a
 /// given change to the user ACL, which under the hood are just single words.
 #[derive(Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Rule {
     /// Enable the user: it is possible to authenticate as this user.
     On,
@@ -143,7 +139,7 @@ pub struct AclInfo {
 }
 
 impl FromRedisValue for AclInfo {
-    fn from_redis_value(v: &Value) -> RedisResult<Self> {
+    fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
         let mut it = v
             .as_sequence()
             .ok_or_else(|| not_convertible_error!(v, ""))?
@@ -176,7 +172,7 @@ impl FromRedisValue for AclInfo {
                             "Expect an arbitrary binary data"
                         )),
                     })
-                    .collect::<RedisResult<_>>()?;
+                    .collect::<Result<_, _>>()?;
 
                 let passwords = passwords
                     .as_sequence()
@@ -184,8 +180,8 @@ impl FromRedisValue for AclInfo {
                         not_convertible_error!(flags, "Expect an array response of ACL flags")
                     })?
                     .iter()
-                    .map(|pass| Ok(Rule::AddHashedPass(String::from_redis_value(pass)?)))
-                    .collect::<RedisResult<_>>()?;
+                    .map(|pass| Ok(Rule::AddHashedPass(String::from_redis_value_ref(pass)?)))
+                    .collect::<Result<_, ParsingError>>()?;
 
                 let commands = match commands {
                     Value::BulkString(cmd) => std::str::from_utf8(cmd)?,
@@ -207,14 +203,14 @@ impl FromRedisValue for AclInfo {
                         "Expect a command addition/removal"
                     )),
                 })
-                .collect::<RedisResult<_>>()?;
+                .collect::<Result<_, _>>()?;
 
                 let keys = keys
                     .as_sequence()
                     .ok_or_else(|| not_convertible_error!(keys, ""))?
                     .iter()
-                    .map(|pat| Ok(Rule::Pattern(String::from_redis_value(pat)?)))
-                    .collect::<RedisResult<_>>()?;
+                    .map(|pat| Ok(Rule::Pattern(String::from_redis_value_ref(pat)?)))
+                    .collect::<Result<_, ParsingError>>()?;
 
                 (flags, passwords, commands, keys)
             }
@@ -294,7 +290,7 @@ mod tests {
             Value::BulkString("keys".into()),
             Value::Array(vec![Value::BulkString("pat:*".into())]),
         ]);
-        let acl_info = AclInfo::from_redis_value(&redis_value).expect("Parse successfully");
+        let acl_info = AclInfo::from_redis_value_ref(&redis_value).expect("Parse successfully");
 
         assert_eq!(
             acl_info,

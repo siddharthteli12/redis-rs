@@ -1,10 +1,12 @@
 #![cfg(feature = "script")]
 use sha1_smol::Sha1;
 
-use crate::cmd::cmd;
-use crate::connection::ConnectionLike;
-use crate::types::{ErrorKind, FromRedisValue, RedisResult, ToRedisArgs};
-use crate::Cmd;
+use crate::{
+    cmd::cmd,
+    connection::ConnectionLike,
+    types::{FromRedisValue, RedisResult, ToRedisArgs},
+    Cmd, ErrorKind,
+};
 
 /// Represents a lua script.
 #[derive(Debug, Clone)]
@@ -42,6 +44,37 @@ impl Script {
     /// Returns the script's SHA1 hash in hexadecimal format.
     pub fn get_hash(&self) -> &str {
         &self.hash
+    }
+
+    /// Returns a command to load the script.
+    pub(crate) fn load_cmd(&self) -> Cmd {
+        let mut cmd = cmd("SCRIPT");
+        cmd.arg("LOAD").arg(self.code.as_bytes());
+        cmd
+    }
+
+    /// Loads the script and returns the SHA1 of it.
+    #[inline]
+    pub fn load(&self, con: &mut dyn ConnectionLike) -> RedisResult<String> {
+        let hash: String = self.load_cmd().query(con)?;
+
+        debug_assert_eq!(hash, self.hash);
+
+        Ok(hash)
+    }
+
+    /// Asynchronously loads the script and returns the SHA1 of it.
+    #[inline]
+    #[cfg(feature = "aio")]
+    pub async fn load_async<C>(&self, con: &mut C) -> RedisResult<String>
+    where
+        C: crate::aio::ConnectionLike,
+    {
+        let hash: String = self.load_cmd().query_async(con).await?;
+
+        debug_assert_eq!(hash, self.hash);
+
+        Ok(hash)
     }
 
     /// Creates a script invocation object with a key filled in.
@@ -146,8 +179,8 @@ impl<'a> ScriptInvocation<'a> {
         match eval_cmd.query(con) {
             Ok(val) => Ok(val),
             Err(err) => {
-                if err.kind() == ErrorKind::NoScriptError {
-                    self.load_cmd().exec(con)?;
+                if err.kind() == ErrorKind::Server(crate::ServerErrorKind::NoScript) {
+                    self.load(con)?;
                     eval_cmd.query(con)
                 } else {
                     Err(err)
@@ -171,8 +204,8 @@ impl<'a> ScriptInvocation<'a> {
             }
             Err(err) => {
                 // Load the script into Redis if the script hash wasn't there already
-                if err.kind() == ErrorKind::NoScriptError {
-                    self.load_cmd().exec_async(con).await?;
+                if err.kind() == ErrorKind::Server(crate::ServerErrorKind::NoScript) {
+                    self.load_async(con).await?;
                     eval_cmd.query_async(con).await
                 } else {
                     Err(err)
@@ -184,11 +217,7 @@ impl<'a> ScriptInvocation<'a> {
     /// Loads the script and returns the SHA1 of it.
     #[inline]
     pub fn load(&self, con: &mut dyn ConnectionLike) -> RedisResult<String> {
-        let hash: String = self.load_cmd().query(con)?;
-
-        debug_assert_eq!(hash, self.script.hash);
-
-        Ok(hash)
+        self.script.load(con)
     }
 
     /// Asynchronously loads the script and returns the SHA1 of it.
@@ -198,18 +227,7 @@ impl<'a> ScriptInvocation<'a> {
     where
         C: crate::aio::ConnectionLike,
     {
-        let hash: String = self.load_cmd().query_async(con).await?;
-
-        debug_assert_eq!(hash, self.script.hash);
-
-        Ok(hash)
-    }
-
-    /// Returns a command to load the script.
-    fn load_cmd(&self) -> Cmd {
-        let mut cmd = cmd("SCRIPT");
-        cmd.arg("LOAD").arg(self.script.code.as_bytes());
-        cmd
+        self.script.load_async(con).await
     }
 
     fn estimate_buflen(&self) -> usize {
@@ -223,7 +241,7 @@ impl<'a> ScriptInvocation<'a> {
             + 4 /* Slots reserved for the length of keys. */
     }
 
-    /// Returns a command to evaluate the command.
+    /// Returns a command to evaluate the script.
     pub(crate) fn eval_cmd(&self) -> Cmd {
         let args_len = 3 + self.keys.len() + self.args.len();
         let mut cmd = Cmd::with_capacity(args_len, self.estimate_buflen());

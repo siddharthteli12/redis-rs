@@ -1,3 +1,106 @@
+### 1.0.0-rc.3 (2025-11-04)
+
+#### Changes & Bug fixes
+
+* Fix `unreachable!` panics ([#1838](https://github.com/redis-rs/redis-rs/pull/1838) by @nihohit)
+* Add docs notes ([#1840](https://github.com/redis-rs/redis-rs/pull/1840) by @Nekidev)
+* Preparation for changes in async cluster reconnection. ([#1841](https://github.com/redis-rs/redis-rs/pull/1841) by @nihohit)
+* srandmember_multiple accepts negative count ([#1855](https://github.com/redis-rs/redis-rs/pull/1855) by @nihohit)
+* Remove clone from route commands ([#1856](https://github.com/redis-rs/redis-rs/pull/1856) by @value by @nihohit)
+
+#### CI improvements
+
+* Updated tested server versions. ([#1839](https://github.com/redis-rs/redis-rs/pull/1839) by @nihohit)
+* Fix timeout in test_async_cluster_route_info_to_nodes ([#1857](https://github.com/redis-rs/redis-rs/pull/1857) by @nihohit)
+
+### 1.0.0-rc.2 (2025-10-20)
+
+#### Changes
+
+* Add more ToRedisArgs & FromRedisValue impls ([#1825](https://github.com/redis-rs/redis-rs/pull/1825) by @QuarticCat)
+* docs: add bb8 feature to Optional Features section ([#1826](https://github.com/redis-rs/redis-rs/pull/1826) by @tottoto)
+* Remove once_cell dependency and use std::LazyLock ([#1828](https://github.com/redis-rs/redis-rs/pull/1828) by @FalkWoldmann)
+* Implement Debug for ConnectionManager ([#1829](https://github.com/redis-rs/redis-rs/pull/1829) by @nihohit)
+* Improve support for collections, specifically [u8] ([#1835](https://github.com/redis-rs/redis-rs/pull/1835) by @nihohit)
+
+### 1.0.0-rc.1 (2025-10-06)
+
+#### Changes
+
+* Fix ToSingleRedisArg visiblity ([#1824](https://github.com/redis-rs/redis-rs/pull/1824) by @nihohit)
+
+### 1.0.0-rc.0
+
+#### Changes
+
+* Mark all public enums as non_exhaustive ([#1817](https://github.com/redis-rs/redis-rs/pull/1817) by @nihohit)
+* Enable sync build for Webassembly ([#1818](https://github.com/redis-rs/redis-rs/pull/1818) by @nihohit)
+* Handle server errors more robustly in async aggregate responses. ([#1820](https://github.com/redis-rs/redis-rs/pull/1820) by @nihohit)
+* Fixed deserialization of autoclaim messages in Redis 6 ([#1822](https://github.com/redis-rs/redis-rs/pull/1822) by @nihohit)
+
+### 1.0.0-rc.0 (2025-10-02)
+
+#### Changes
+
+* Prepare 1.0.x branch for usage([#1659](https://github.com/redis-rs/redis-rs/pull/1659) by @nihohit)
+* Remove unsafe iterators([#1660](https://github.com/redis-rs/redis-rs/pull/1660) by @nihohit)
+* Remove deprecated features([#1662](https://github.com/redis-rs/redis-rs/pull/1662) by @nihohit)
+* Add a specific error type for parsing errors([#1661](https://github.com/redis-rs/redis-rs/pull/1661) by @nihohit)
+* Upgrade criterion version([#1657](https://github.com/redis-rs/redis-rs/pull/1657) by @nihohit)
+* Remove all deprecated functions([#1672](https://github.com/redis-rs/redis-rs/pull/1672) by @nihohit)
+* Make the num-bigint crate optional again([#1670](https://github.com/redis-rs/redis-rs/pull/1670) by @nihohit)
+* Move TCP features to settings([#1669](https://github.com/redis-rs/redis-rs/pull/1669) by @nihohit)
+* Set default timeouts for async connections([#1686](https://github.com/redis-rs/redis-rs/pull/1686) by @nihohit)
+* Fix ConnectionManager retry behavior([#1717](https://github.com/redis-rs/redis-rs/pull/1717) by @nihohit)
+* Move module files to the commands folder([#1719](https://github.com/redis-rs/redis-rs/pull/1719) by @nihohit)
+* Refactor the error types([#1706](https://github.com/redis-rs/redis-rs/pull/1706) by @nihohit)
+* Refactor cluster file order and routing([#1711](https://github.com/redis-rs/redis-rs/pull/1711) by @nihohit)
+* Use builder pattern for SentinelNodeConnectionInfo([#1723](https://github.com/redis-rs/redis-rs/pull/1723) by @nihohit)
+* Improve pipeline errors([#1718](https://github.com/redis-rs/redis-rs/pull/1718) by @nihohit)
+* Various minor performance improvements to cluster usage([#1729](https://github.com/redis-rs/redis-rs/pull/1729) by @nihohit)
+* Enhance visibility of typed traits in docs([#1732](https://github.com/redis-rs/redis-rs/pull/1732) by @nihohit)
+* Allow async fire and forget([#1756](https://github.com/redis-rs/redis-rs/pull/1756) by @nihohit)
+* Add a detailed TransactionAborted error([#1755](https://github.com/redis-rs/redis-rs/pull/1755) by @nihohit)
+* Reduce number of clones([#1759](https://github.com/redis-rs/redis-rs/pull/1759) by @nihohit)
+* Align async resubscribe behavior([#1757](https://github.com/redis-rs/redis-rs/pull/1757) by @nihohit)
+* fix: Reject wildcard addresses in client and cluster connections ([#1762](https://github.com/redis-rs/redis-rs/pull/1762) by @naoNao89)
+* Create a macro for async tests([#1779](https://github.com/redis-rs/redis-rs/pull/1779) by @nihohit)
+* Handle more tests in testing macro([#1783](https://github.com/redis-rs/redis-rs/pull/1783) by @nihohit)
+* CI: Only run builds after lints pass([#1785](https://github.com/redis-rs/redis-rs/pull/1785) by @nihohit)
+* Make FromRedisValue take an owned value by default([#1784](https://github.com/redis-rs/redis-rs/pull/1784) by @nihohit)
+* Enable more ways to build a parsing error([#1788](https://github.com/redis-rs/redis-rs/pull/1788) by @nihohit)
+* Require single arguments for some calls ([#1792](https://github.com/redis-rs/redis-rs/pull/1792) by @nihohit)
+
+### 0.32.7 (2025-10-03)
+
+#### Changes
+
+* Port https://github.com/redis-rs/redis-rs/pull/1711 to 0.32.x ([#1819](https://github.com/redis-rs/redis-rs/pull/1819) by @nihohit)
+
+### 0.32.6 (2025-09-26)
+
+#### Changes
+
+* Remove unnecessary dependency by @nihohit in ([#1760](https://github.com/redis-rs/redis-rs/pull/1760) by @nihohit)
+* docs: fix `hexpire_at` command measurement unit by ([#1793](https://github.com/redis-rs/redis-rs/pull/1793) by @chrxn1c)
+
+### 0.32.5 (2025-08-10)
+
+#### Changes & Bug fixes
+
+* Added `async_get_all_replicas` & `get_all_replicas` methods ([#1728](https://github.com/redis-rs/redis-rs/pull/1728) by @siddharthteli12)
+* Support Redis 8.2 stream command extensions and new deletion commands ([#1743](https://github.com/redis-rs/redis-rs/pull/1743) by @StefanPalashev)
+* Make `Script`'s `load_cmd` public ([#1731](https://github.com/redis-rs/redis-rs/pull/1731) by @somechris)
+* Clarify difference between RESP2 and RESP3 pubsub. ([#1750](https://github.com/redis-rs/redis-rs/pull/1750) by @nihohit)
+
+#### Documentation & CI improvements
+
+* Add Cmd tests. ([#1751](https://github.com/redis-rs/redis-rs/pull/1751) by @nihohit)
+* test: Fix clippy warnings about `ref instead of clone` in stream tests ([#1748](https://github.com/redis-rs/redis-rs/pull/1748) by @somechris)
+* docs: Fix usage of command/script of `ScriptInvocation::eval_cmd` ([#1749](https://github.com/redis-rs/redis-rs/pull/1749) by @somechris)
+* Remove usage of criterion's blackbox in benches. ([#1745](https://github.com/redis-rs/redis-rs/pull/1745) by @nihohit)
+* Further limit flag frenzy checks ([#1725](https://github.com/redis-rs/redis-rs/pull/1725) by @nihohit)
+
 ### 0.32.4 (2025-07-13)
 
 #### Changes & Bug fixes

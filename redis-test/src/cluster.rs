@@ -42,6 +42,7 @@ impl Default for RedisClusterConfiguration {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum ClusterType {
     Tcp,
     TcpTls,
@@ -314,7 +315,7 @@ impl RedisCluster {
             let conn_info = server.connection_info();
             eprintln!(
                 "waiting until {:?} knows required number of replicas",
-                conn_info.addr
+                conn_info.addr()
             );
 
             let client = redis::Client::open(server.connection_info()).unwrap();
@@ -324,7 +325,7 @@ impl RedisCluster {
             // retry 500 times
             for _ in 1..500 {
                 let value = redis::cmd("CLUSTER").arg("SLOTS").query(&mut con).unwrap();
-                let slots: Vec<Vec<redis::Value>> = redis::from_owned_redis_value(value).unwrap();
+                let slots: Vec<Vec<redis::Value>> = redis::from_redis_value(value).unwrap();
 
                 // all slots should have following items:
                 // [start slot range, end slot range, master's IP, replica1's IP, replica2's IP,... ]

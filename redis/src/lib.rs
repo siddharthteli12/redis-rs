@@ -29,20 +29,19 @@
 //! The user can enable TLS support using either RusTLS or native support (usually OpenSSL),
 //! using the `tls-rustls` or `tls-native-tls` features respectively. In order to enable TLS
 //! for async usage, the user must enable matching features for their runtime - either `tokio-native-tls-comp`,
-//! `tokio-rustls-comp`, `async-std-native-tls-comp`, or `async-std-rustls-comp`. Additionally, the
+//! `tokio-rustls-comp`, `smol-native-tls-comp`, or `smol-rustls-comp`. Additionally, the
 //! `tls-rustls-webpki-roots` allows usage of of webpki-roots for the root certificate store.
 //!
 //! # TCP settings
 //!
-//! The user can set parameters of the underlying TCP connection by using the `tcp_nodelay` and `keep-alive` features.
-//! Alternatively, users of async connections can set [crate::io::tcp::TcpSettings] on the connection configuration objects,
+//! The user can set parameters of the underlying TCP connection by setting [io::tcp::TcpSettings] on the connection configuration objects,
 //! and set the TCP parameters in a more specific manner there.
 //!
 //! ## Connection Handling
 //!
 //! For connecting to redis you can use a client object which then can produce
 //! actual connections.  Connections and clients as well as results of
-//! connections and clients are considered `ConnectionLike` objects and
+//! connections and clients are considered [ConnectionLike] objects and
 //! can be used anywhere a request is made.
 //!
 //! The full canonical way to get a connection is to create a client and
@@ -69,14 +68,14 @@
 //! ```rust,no_run
 //! # #[cfg(feature = "r2d2")]
 //! # fn do_something() {
-//! use redis::Commands;
+//! use redis::TypedCommands;
 //!
 //! let client = redis::Client::open("redis://127.0.0.1/").unwrap();
 //! let pool = r2d2::Pool::builder().build(client).unwrap();
 //! let mut conn = pool.get().unwrap();
 //!
-//! let _: () = conn.set("KEY", "VALUE").unwrap();
-//! let val: String = conn.get("KEY").unwrap();
+//! conn.set("KEY", "VALUE").unwrap();
+//! let val = conn.get("KEY").unwrap();
 //! # }
 //! ```
 //!
@@ -92,18 +91,16 @@
 //!
 //! * `acl`: enables acl support (enabled by default)
 //! * `tokio-comp`: enables support for async usage with the Tokio runtime (optional)
-//! * `async-std-comp`: enables support for async usage with any runtime which is async-std compliant. (optional)
 //! * `smol-comp`: enables support for async usage with the Smol runtime (optional)
 //! * `geospatial`: enables geospatial support (enabled by default)
 //! * `script`: enables script support (enabled by default)
 //! * `streams`: enables high-level interface for interaction with Redis streams (enabled by default)
 //! * `r2d2`: enables r2d2 connection pool support (optional)
+//! * `bb8`: enables bb8 connection pool support (optional)
 //! * `ahash`: enables ahash map/set support & uses ahash internally (+7-10% performance) (optional)
 //! * `cluster`: enables redis cluster support (optional)
 //! * `cluster-async`: enables async redis cluster support (optional)
 //! * `connection-manager`: enables support for automatic reconnection (optional)
-//! * `keep-alive`: enables keep-alive option on socket by means of `socket2` crate (enabled by default)
-//! * `tcp_nodelay`: enables the no-delay flag on  communication sockets (optional)
 //! * `rust_decimal`, `bigdecimal`, `num-bigint`: enables type conversions to large number representation from different crates (optional)
 //! * `uuid`: enables type conversion to UUID (optional)
 //! * `sentinel`: enables high-level interfaces for communication with Redis sentinels (optional)
@@ -114,12 +111,12 @@
 //! ## Connection Parameters
 //!
 //! redis-rs knows different ways to define where a connection should
-//! go.  The parameter to `Client::open` needs to implement the
-//! `IntoConnectionInfo` trait of which there are three implementations:
+//! go.  The parameter to [Client::open] needs to implement the
+//! [IntoConnectionInfo] trait of which there are three implementations:
 //!
 //! * string slices in `redis://` URL format.
 //! * URL objects from the redis-url crate.
-//! * `ConnectionInfo` objects.
+//! * [ConnectionInfo] objects.
 //!
 //! The URL format is `redis://[<username>][:<password>@]<hostname>[:port][/[<db>][?protocol=<protocol>]]`
 //!
@@ -134,9 +131,9 @@
 //!
 //! ## Executing Low-Level Commands
 //!
-//! To execute low-level commands you can use the `cmd` function which allows
+//! To execute low-level commands you can use the [cmd::cmd] function which allows
 //! you to build redis requests.  Once you have configured a command object
-//! to your liking you can send a query into any `ConnectionLike` object:
+//! to your liking you can send a query into any [ConnectionLike] object:
 //!
 //! ```rust,no_run
 //! fn do_something(con: &mut redis::Connection) -> redis::RedisResult<()> {
@@ -166,16 +163,16 @@
 //! ## Executing High-Level Commands
 //!
 //! The high-level interface is similar.  For it to become available you
-//! need to use the `Commands` trait in which case all `ConnectionLike`
+//! need to use the `TypedCommands` or `Commands` traits in which case all `ConnectionLike`
 //! objects the library provides will also have high-level methods which
 //! make working with the protocol easier:
 //!
 //! ```rust,no_run
 //! extern crate redis;
-//! use redis::Commands;
+//! use redis::TypedCommands;
 //!
 //! fn do_something(con: &mut redis::Connection) -> redis::RedisResult<()> {
-//!     let _: () = con.set("my_key", 42)?;
+//!     con.set("my_key", 42)?;
 //!     Ok(())
 //! }
 //! ```
@@ -183,45 +180,16 @@
 //! Note that high-level commands are work in progress and many are still
 //! missing!
 //!
-//! ## Type Conversions
+//! ## Pre-typed Commands
 //!
 //! Because redis inherently is mostly type-less and the protocol is not
 //! exactly friendly to developers, this library provides flexible support
-//! for casting values to the intended results.  This is driven through the `FromRedisValue` and `ToRedisArgs` traits.
+//! for casting values to the intended results. This is driven through the [FromRedisValue] and [ToRedisArgs] traits.
 //!
-//! The `arg` method of the command will accept a wide range of types through
-//! the `ToRedisArgs` trait and the `query` method of a command can convert the
-//! value to what you expect the function to return through the `FromRedisValue`
-//! trait.  This is quite flexible and allows vectors, tuples, hashsets, hashmaps
-//! as well as optional values:
-//!
-//! ```rust,no_run
-//! # use redis::Commands;
-//! # use std::collections::{HashMap, HashSet};
-//! # fn do_something() -> redis::RedisResult<()> {
-//! # let client = redis::Client::open("redis://127.0.0.1/").unwrap();
-//! # let mut con = client.get_connection().unwrap();
-//! let count : i32 = con.get("my_counter")?;
-//! let count = con.get("my_counter").unwrap_or(0i32);
-//! let k : Option<String> = con.get("missing_key")?;
-//! let name : String = con.get("my_name")?;
-//! let bin : Vec<u8> = con.get("my_binary")?;
-//! let map : HashMap<String, i32> = con.hgetall("my_hash")?;
-//! let keys : Vec<String> = con.hkeys("my_hash")?;
-//! let mems : HashSet<i32> = con.smembers("my_set")?;
-//! let (k1, k2) : (String, String) = con.get(&["k1", "k2"])?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! ## Pre-typed Commands
-//!
-//! In some cases, you may not have a desired return type for a high-level command, and would
-//! instead like to use defaults provided by the library, to avoid the clutter and development overhead
+//! In most cases, you may like to use defaults provided by the library, to avoid the clutter and development overhead
 //! of specifying types for each command.
 //!
-//! The library facilitates this by providing the `TypedCommands` and `AsyncTypedCommands`
-//! as alternatives to `Commands` and `AsyncCommands` respectively. These traits provide functions
+//! The library facilitates this by providing the [commands::TypedCommands] and [commands::AsyncTypedCommands]. These traits provide functions
 //! with pre-defined and opinionated return types. For example, `set` returns `()`, avoiding the need
 //! for developers to explicitly type each call as returning `()`.
 //!
@@ -239,11 +207,91 @@
 //! }
 //! ```
 //!
+//! ## Custom Type Conversions
+//!
+//! In some cases, the user might want to define their own return value types to various Redis calls.
+//! The library facilitates this by providing the [commands::Commands] and [commands::AsyncCommands]
+//! as alternatives to [commands::TypedCommands] and [commands::AsyncTypedCommands] respectively.
+//!
+//! The `arg` method of the command will accept a wide range of types through
+//! the [ToRedisArgs] trait and the `query` method of a command can convert the
+//! value to what you expect the function to return through the [FromRedisValue]
+//! trait. This is quite flexible and allows vectors, tuples, hashsets, hashmaps
+//! as well as optional values:
+//!
+//! ```rust,no_run
+//! # use redis::Commands;
+//! # use std::collections::{HashMap, HashSet};
+//! # fn do_something() -> redis::RedisResult<()> {
+//! # let client = redis::Client::open("redis://127.0.0.1/").unwrap();
+//! # let mut con = client.get_connection().unwrap();
+//! let count : i32 = con.get("my_counter")?;
+//! let count = con.get("my_counter").unwrap_or(0i32);
+//! let k : Option<String> = con.get("missing_key")?;
+//! let name : String = con.get("my_name")?;
+//! let bin : Vec<u8> = con.get("my_binary")?;
+//! let map : HashMap<String, i32> = con.hgetall("my_hash")?;
+//! let keys : Vec<String> = con.hkeys("my_hash")?;
+//! let mems : HashSet<i32> = con.smembers("my_set")?;
+//! let (k1, k2) : (String, String) = con.mget(&["k1", "k2"])?;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! # RESP3 support
 //! Since Redis / Valkey version 6, a newer communication protocol called RESP3 is supported.
 //! Using this protocol allows the user both to receive a more varied `Value` results, for users
 //! who use the low-level `Value` type, and to receive out of band messages on the same connection. This allows the user to receive PubSub
 //! messages on the same connection, instead of creating a new PubSub connection (see "RESP3 async pubsub").
+//!
+
+//!
+//! ## RESP3 pubsub
+//! If you're targeting a Redis/Valkey server of version 6 or above, you can receive
+//! pubsub messages from it without creating another connection, by setting a push sender on the connection.
+//!
+//! ```rust,no_run
+//! # #[cfg(feature = "aio")]
+//! # {
+//! # use futures::prelude::*;
+//! # use redis::AsyncTypedCommands;
+//!
+//! # async fn func() -> redis::RedisResult<()> {
+//! let client = redis::Client::open("redis://127.0.0.1/?protocol=resp3").unwrap();
+//! let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+//! let config = redis::AsyncConnectionConfig::new().set_push_sender(tx);
+//! let mut con = client.get_multiplexed_async_connection_with_config(&config).await?;
+//! con.subscribe(&["channel_1", "channel_2"]).await?;
+//!
+//! loop {
+//!   println!("Received {:?}", rx.recv().await.unwrap());
+//! }
+//! # Ok(()) }
+//! # }
+//! ```
+//!
+//! sync example:
+//!
+//! ```rust,no_run
+//! # {
+//! # use redis::TypedCommands;
+//!
+//! # async fn func() -> redis::RedisResult<()> {
+//! let client = redis::Client::open("redis://127.0.0.1/?protocol=resp3").unwrap();
+//! let (tx, rx) = std::sync::mpsc::channel();
+//! let mut con = client.get_connection().unwrap();
+//! con.set_push_sender(tx);
+//! con.subscribe_resp3(&["channel_1", "channel_2"])?;
+//!
+//! loop {
+//!   std::thread::sleep(std::time::Duration::from_millis(10));
+//!   // the connection only reads when actively polled, so it must constantly send and receive requests.
+//!   _ = con.ping().unwrap();
+//!   println!("Received {:?}", rx.try_recv().unwrap());
+//! }
+//! # Ok(()) }
+//! # }
+//!  ```
 //!
 //! # Iteration Protocol
 //!
@@ -322,6 +370,17 @@
 //! # Ok(()) }
 //! ```
 //!
+//! NOTE: Pipelines return a collection of results, even when there's only a single response.
+//!       Make sure to wrap single-result pipeline responses in a collection. For example:
+//!
+//! ```rust,no_run
+//! # let client = redis::Client::open("redis://127.0.0.1/").unwrap();
+//! # let mut con = client.get_connection().unwrap();
+//! let (k1,): (i32,) = redis::pipe()
+//!     .cmd("SET").arg("key_1").arg(42).ignore()
+//!     .cmd("GET").arg("key_1").query(&mut con).unwrap();
+//! ```
+//!
 //! # Transactions
 //!
 //! Transactions are available through atomic pipelines.  In order to use
@@ -386,30 +445,6 @@
 //! # Ok(()) }
 //! ```
 //!
-//! ## RESP3 async pubsub
-//! If you're targeting a Redis/Valkey server of version 6 or above, you can receive
-//! pubsub messages from it without creating another connection, by setting a push sender on the connection.
-//!
-//! ```rust,no_run
-//! # #[cfg(feature = "aio")]
-//! # {
-//! # use futures::prelude::*;
-//! # use redis::AsyncCommands;
-//!
-//! # async fn func() -> redis::RedisResult<()> {
-//! let client = redis::Client::open("redis://127.0.0.1/?protocol=resp3").unwrap();
-//! let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-//! let config = redis::AsyncConnectionConfig::new().set_push_sender(tx);
-//! let mut con = client.get_multiplexed_async_connection_with_config(&config).await?;
-//! con.subscribe(&["channel_1", "channel_2"]).await?;
-//!
-//! loop {
-//!   println!("Received {:?}", rx.recv().await.unwrap());
-//! }
-//! # Ok(()) }
-//! # }
-//! ```
-//!
 #![cfg_attr(
     feature = "script",
     doc = r##"
@@ -463,39 +498,39 @@ it will not automatically be loaded and retried. The script can be loaded using 
 # Async
 
 In addition to the synchronous interface that's been explained above there also exists an
-asynchronous interface based on [`futures`][] and [`tokio`][], [`smol`](https://docs.rs/smol/latest/smol/), or [`async-std`][].
+asynchronous interface based on [`futures`][] and [`tokio`][] or [`smol`](https://docs.rs/smol/latest/smol/).
  All async connections are cheap to clone, and clones can be used concurrently from multiple threads.
 
 This interface exists under the `aio` (async io) module (which requires that the `aio` feature
 is enabled) and largely mirrors the synchronous with a few concessions to make it fit the
-constraints of `futures`. 
+constraints of `futures`.
 
 ```rust,no_run
 use futures::prelude::*;
-use redis::AsyncCommands;
+use redis::AsyncTypedCommands;
 
 # #[tokio::main]
 # async fn main() -> redis::RedisResult<()> {
 let client = redis::Client::open("redis://127.0.0.1/").unwrap();
 let mut con = client.get_multiplexed_async_connection().await?;
 
-let _: () = con.set("key1", b"foo").await?;
+con.set("key1", b"foo").await?;
 
 redis::cmd("SET").arg(&["key2", "bar"]).exec_async(&mut con).await?;
 
 let result = redis::cmd("MGET")
- .arg(&["key1", "key2"])
- .query_async(&mut con)
- .await;
+  .arg(&["key1", "key2"])
+  .query_async(&mut con)
+  .await;
 assert_eq!(result, Ok(("foo".to_string(), b"bar".to_vec())));
 # Ok(()) }
 ```
 
 ## Runtime support
-The crate supports multiple runtimes, including `tokio`, `async-std`, and `smol`. For Tokio, the crate will
-spawn tasks on the current thread runtime. For async-std & smol, the crate will spawn tasks on the the global runtime.
+The crate supports multiple runtimes, including `tokio` and `smol`. For Tokio, the crate will
+spawn tasks on the current thread runtime. For smol, the crate will spawn tasks on the the global runtime.
 It is recommended that the crate be used with support only for a single runtime. If the crate is compiled with multiple runtimes,
-the user should call [`crate::aio::prefer_tokio`], [`crate::aio::prefer_async_std`] or [`crate::aio::prefer_smol`] to set the preferred runtime.
+the user should call [`crate::aio::prefer_tokio`] or [`crate::aio::prefer_smol`] to set the preferred runtime.
 These functions set global state which automatically chooses the correct runtime for the async connection.
 
 "##
@@ -503,7 +538,6 @@ These functions set global state which automatically chooses the correct runtime
 //!
 //! [`futures`]:https://crates.io/crates/futures
 //! [`tokio`]:https://tokio.rs
-//! [`async-std`]:https://async.rs/
 #![cfg_attr(
     feature = "sentinel",
     doc = r##"
@@ -515,13 +549,12 @@ use redis::{ Commands, RedisConnectionInfo };
 use redis::sentinel::{ SentinelServerType, SentinelClient, SentinelNodeConnectionInfo };
 
 let nodes = vec!["redis://127.0.0.1:6379/", "redis://127.0.0.1:6378/", "redis://127.0.0.1:6377/"];
+let sentinel_node_connection_info = SentinelNodeConnectionInfo::default()
+  .set_tls_mode(redis::TlsMode::Insecure);
 let mut sentinel = SentinelClient::build(
     nodes,
     String::from("primary1"),
-    Some(SentinelNodeConnectionInfo {
-        tls_mode: Some(redis::TlsMode::Insecure),
-        redis_connection_info: None,
-    }),
+    Some(sentinel_node_connection_info),
     redis::sentinel::SentinelServerType::Master,
 )
 .unwrap();
@@ -539,21 +572,49 @@ use redis::sentinel::{ SentinelServerType, SentinelClient, SentinelNodeConnectio
 # #[tokio::main]
 # async fn main() -> redis::RedisResult<()> {
 let nodes = vec!["redis://127.0.0.1:6379/", "redis://127.0.0.1:6378/", "redis://127.0.0.1:6377/"];
+let sentinel_node_connection_info = SentinelNodeConnectionInfo::default()
+  .set_tls_mode(redis::TlsMode::Insecure);
 let mut sentinel = SentinelClient::build(
     nodes,
     String::from("primary1"),
-    Some(SentinelNodeConnectionInfo {
-        tls_mode: Some(redis::TlsMode::Insecure),
-        redis_connection_info: None,
-    }),
+    Some(sentinel_node_connection_info),
     redis::sentinel::SentinelServerType::Master,
 )
 .unwrap();
 
 let primary = sentinel.get_async_connection().await.unwrap();
 # Ok(()) }
+```
 "##
 )]
+//!
+//! # Upgrading to version 1
+//!
+//! * Iterators are now safe by default, without an opt out. This means that the iterators return `RedisResult<Value>` instead of `Value`. See [this PR](https://github.com/redis-rs/redis-rs/pull/1641) for background. If you previously used the "safe_iterators" feature to opt-in to this behavior, just remove the feature declaration. Otherwise you will need to adjust your usage of iterators to account for potential conversion failures.
+//! * Parsing values using [FromRedisValue] no longer returns [RedisError] on failure, in order to save the users checking for various server & client errors in such scenarios. if you rely on the error type when using this trait, you will need to adjust your error handling code. [ParsingError] should only be printed, since it does not contain any user actionable info outside of its error message.
+//! * If you used the `tcp_nodelay`, `keep-alive`, or `disable-client-setinfo` features, you'll need to set these values on the connection info you pass to the client use [ConnectionInfo::set_tcp_settings].
+//! * If you create [ConnectionInfo], [RedisConnectionInfo], or [sentinel::SentinelNodeConnectionInfo] objects explicitly, now you need to use the builder pattern setters instead of setting fields.
+//! * if you used `MultiplexedConnection::new_with_response_timeout`, it is replaced by [aio::MultiplexedConnection::new_with_config]. `Client::get_multiplexed_tokio_connection_with_response_timeouts`, `Client::get_multiplexed_tokio_connection`, `Client::create_multiplexed_tokio_connection_with_response_timeout`, `Client::create_multiplexed_tokio_connection` were replaced by [Client::get_multiplexed_async_connection_with_config].
+//! * If you're using `tokio::time::pause()` or otherwise manipulating time, you might need to opt out of timeouts using `AsyncConnectionConfig::new().set_connection_timeout(None).set_response_timeout(None)`.
+//! * Async connections now have default timeouts. If you're using blocking commands or other potentially long running commands, you should adjust the timeouts accordingly.
+//! * If you're manually setting `ConnectionManager`'s retry setting, then please re-examine the values you set. `exponential_base` has been made a f32, and `factor` was replaced by `min_delay`, in order to match the documented behavior, instead of the actual erroneous behavior of past versions.
+//! * Vector set types have been moved into the `vector_sets` module, instead of being exposed directly.
+//! * ErrorKind::TypeError was renamed ErrorKind::UnexpectedReturnType, to clarify its meaning. Also fixed some cases where it and ErrorKind::Parse were used interchangeably.
+//! * Connecting to a wildcard address (`0.0.0.0` or `::`) is now explicitly disallowed and will return an error. This change prevents connection timeouts and provides a clearer error message. This affects both standalone and cluster connections. Users relying on this behavior should now connect to a specific, non-wildcard address.
+//! * If you implemented [crate::FromRedisValue] directly, or used `FromRedisValue::from_redis_value`/`FromRedisValue::from_owned_redis_value`, notice that the trait's semantics changed - now the trait requires an owned value by default, instead of a reference. See [the PR](https://github.com/redis-rs/redis-rs/pull/1784) for details.
+//! * The implicit replacement of `GET` with `MGET` or `SET` with `MSET` has been replaced, and limited these and other commands to only take values that serialize into single redis values, as enforced by a compilation failure. Example:
+//!
+//! ```rust,no_run,compile_fail
+//! use redis::Commands;
+//! fn main() -> redis::RedisResult<()> {
+//!     let client = redis::Client::open("redis://127.0.0.1/")?;
+//!     let mut con = client.get_connection()?;
+//!     // `get` should fail compilation, because it receives multiple values
+//!     _ = con.get(["foo","bar"]);
+//!     Ok(())
+//! }
+//! ```
+//!
 //!
 
 #![deny(non_camel_case_types)]
@@ -597,13 +658,8 @@ pub use crate::script::{Script, ScriptInvocation};
 #[rustfmt::skip]
 pub use crate::types::{
     // utility functions
+    from_redis_value_ref,
     from_redis_value,
-    from_owned_redis_value,
-    make_extension_error,
-
-    // error kinds
-    ErrorKind,
-    RetryMethod,
 
     // conversion traits
     FromRedisValue,
@@ -620,12 +676,10 @@ pub use crate::types::{
     ReplicaInfo,
     IntegerReplyOrNoOp,
 	ValueType,
-
-    // error and result types
-    RedisError,
     RedisResult,
     RedisWrite,
     ToRedisArgs,
+    ToSingleRedisArg,
 
     // low level values
     Value,
@@ -633,6 +687,10 @@ pub use crate::types::{
     VerbatimFormat,
     ProtocolVersion,
     PushInfo,
+};
+pub use crate::errors::{
+    make_extension_error, ErrorKind, ParsingError, RedisError, RetryMethod, ServerError,
+    ServerErrorKind,
 };
 
 #[cfg(feature = "aio")]
@@ -647,7 +705,7 @@ mod pipeline;
 
 #[cfg(feature = "acl")]
 #[cfg_attr(docsrs, doc(cfg(feature = "acl")))]
-pub mod acl;
+pub use commands::acl;
 
 #[cfg(feature = "aio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "aio")))]
@@ -663,37 +721,26 @@ pub use crate::commands::JsonAsyncCommands;
 
 #[cfg(feature = "vector-sets")]
 #[cfg_attr(docsrs, doc(cfg(feature = "vector-sets")))]
-pub use crate::commands::{
-    EmbeddingInput, VAddOptions, VEmbOptions, VSimOptions, VectorAddInput, VectorQuantization,
-    VectorSimilaritySearchInput,
-};
+pub use crate::commands::vector_sets;
 
 #[cfg(feature = "geospatial")]
 #[cfg_attr(docsrs, doc(cfg(feature = "geospatial")))]
-pub mod geo;
+pub use commands::geo;
 
 #[cfg(any(feature = "connection-manager", feature = "cluster-async"))]
 mod subscription_tracker;
 
 #[cfg(feature = "cluster")]
-mod cluster_topology;
+mod cluster_handling;
 
 #[cfg(feature = "cluster")]
 #[cfg_attr(docsrs, doc(cfg(feature = "cluster")))]
-pub mod cluster;
-
-#[cfg(feature = "cluster")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cluster")))]
-mod cluster_client;
-
-#[cfg(feature = "cluster")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cluster")))]
-mod cluster_pipeline;
+pub use cluster_handling::sync_connection as cluster;
 
 /// Routing information for cluster commands.
 #[cfg(feature = "cluster")]
 #[cfg_attr(docsrs, doc(cfg(feature = "cluster")))]
-pub mod cluster_routing;
+pub use cluster_handling::routing as cluster_routing;
 
 #[cfg(feature = "r2d2")]
 #[cfg_attr(docsrs, doc(cfg(feature = "r2d2")))]
@@ -705,11 +752,11 @@ mod bb8;
 
 #[cfg(feature = "streams")]
 #[cfg_attr(docsrs, doc(cfg(feature = "streams")))]
-pub mod streams;
+pub use commands::streams;
 
 #[cfg(feature = "cluster-async")]
 #[cfg_attr(docsrs, doc(cfg(all(feature = "cluster", feature = "aio"))))]
-pub mod cluster_async;
+pub use cluster_handling::async_connection as cluster_async;
 
 #[cfg(feature = "sentinel")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sentinel")))]
@@ -730,11 +777,34 @@ mod client;
 mod cmd;
 mod commands;
 mod connection;
+mod errors;
 /// Module for defining I/O behavior.
 pub mod io;
 mod parser;
 mod script;
 mod types;
+
+macro_rules! check_resp3 {
+    ($protocol: expr) => {
+        if !$protocol.supports_resp3() {
+            return Err(RedisError::from((
+                crate::ErrorKind::InvalidClientConfig,
+                "RESP3 is required for this command",
+            )));
+        }
+    };
+
+    ($protocol: expr, $message: expr) => {
+        if !$protocol.supports_resp3() {
+            return Err(RedisError::from((
+                crate::ErrorKind::InvalidClientConfig,
+                $message,
+            )));
+        }
+    };
+}
+
+pub(crate) use check_resp3;
 
 #[cfg(test)]
 mod tests {

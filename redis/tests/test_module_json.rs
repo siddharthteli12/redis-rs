@@ -3,10 +3,10 @@
 use std::assert_eq;
 use std::collections::HashMap;
 
-use redis::{JsonCommands, ProtocolVersion};
+use redis::JsonCommands;
 
 use redis::{
-    ErrorKind, RedisError, RedisResult,
+    ErrorKind, RedisResult,
     Value::{self, *},
 };
 use redis_test::server::Module;
@@ -42,15 +42,14 @@ fn test_module_json_serialize_error() {
 
     test_invalid_value.invalid_json.insert(None, 2i64);
 
-    let set_invalid: RedisResult<bool> = con.json_set(TEST_KEY, "$", &test_invalid_value);
+    let set_invalid = con
+        .json_set::<_, _, _, bool>(TEST_KEY, "$", &test_invalid_value)
+        .unwrap_err();
 
+    assert_eq!(set_invalid.kind(), ErrorKind::Serialize);
     assert_eq!(
-        set_invalid,
-        Err(RedisError::from((
-            ErrorKind::Serialize,
-            "Serialization Error",
-            String::from("key must be string")
-        )))
+        set_invalid.to_string(),
+        String::from("key must be a string")
     );
 }
 
@@ -297,7 +296,7 @@ fn test_module_json_get() {
 
     assert_eq!(json_get, Ok("[3,null]".into()));
 
-    let json_get_multi: RedisResult<String> = con.json_get(TEST_KEY, vec!["..a", "$..b"]);
+    let json_get_multi: RedisResult<String> = con.json_get(TEST_KEY, &["..a", "$..b"]);
 
     if json_get_multi != Ok("{\"$..b\":[3,null],\"..a\":[2,4]}".into())
         && json_get_multi != Ok("{\"..a\":[2,4],\"$..b\":[3,null]}".into())
@@ -311,21 +310,22 @@ fn test_module_json_mget() {
     let ctx = TestContext::with_modules(&[Module::Json], MTLS_NOT_ENABLED);
     let mut con = ctx.connection();
 
-    let set_initial_a: RedisResult<bool> = con.json_set(
-        format!("{TEST_KEY}-a"),
-        "$",
-        &json!({"a":1i64, "b": 2i64, "nested": {"a": 3i64, "b": null}}),
-    );
-    let set_initial_b: RedisResult<bool> = con.json_set(
-        format!("{TEST_KEY}-b"),
-        "$",
-        &json!({"a":4i64, "b": 5i64, "nested": {"a": 6i64, "b": null}}),
-    );
+    let set_initial: RedisResult<bool> = con.json_mset(&[
+        (
+            format!("{TEST_KEY}-a"),
+            "$",
+            &json!({"a":1i64, "b": 2i64, "nested": {"a": 3i64, "b": null}}),
+        ),
+        (
+            format!("{TEST_KEY}-b"),
+            "$",
+            &json!({"a":4i64, "b": 5i64, "nested": {"a": 6i64, "b": null}}),
+        ),
+    ]);
 
-    assert_eq!(set_initial_a, Ok(true));
-    assert_eq!(set_initial_b, Ok(true));
+    assert_eq!(set_initial, Ok(true));
 
-    let json_mget: RedisResult<Value> = con.json_get(
+    let json_mget: RedisResult<Value> = con.json_mget(
         vec![format!("{TEST_KEY}-a"), format!("{TEST_KEY}-b")],
         "$..a",
     );
@@ -353,7 +353,7 @@ fn test_module_json_num_incr_by() {
     assert_eq!(set_initial, Ok(true));
 
     let redis_ver = std::env::var("REDIS_VERSION").unwrap_or_default();
-    if ctx.protocol != ProtocolVersion::RESP2 && redis_ver.starts_with("7.") {
+    if ctx.protocol.supports_resp3() && redis_ver.starts_with("7.") {
         // cannot increment a string
         let json_numincrby_a: RedisResult<Vec<Value>> = con.json_num_incr_by(TEST_KEY, "$.a", 2);
         assert_eq!(json_numincrby_a, Ok(vec![Nil]));
@@ -506,7 +506,7 @@ fn test_module_json_type() {
     let json_type_c: RedisResult<Value> = con.json_type(TEST_KEY, "$..dummy");
 
     let redis_ver = std::env::var("REDIS_VERSION").unwrap_or_default();
-    if ctx.protocol != ProtocolVersion::RESP2 && redis_ver.starts_with("7.") {
+    if ctx.protocol.supports_resp3() && redis_ver.starts_with("7.") {
         // In RESP3 current RedisJSON always gives response in an array.
         assert_eq!(
             json_type_a,

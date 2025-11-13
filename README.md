@@ -15,7 +15,7 @@ The crate is called `redis` and you can depend on it via cargo:
 
 ```ini
 [dependencies]
-redis = "0.32.4"
+redis = "1.0.0-rc.3"
 ```
 
 Documentation on the library can be found at
@@ -26,8 +26,24 @@ Documentation on the library can be found at
 To open a connection you need to create a client and then to fetch a
 connection from it.
 
-Many commands are implemented through the `Commands` trait but manual
-command creation is also possible.
+Many commands are implemented through the `TypedCommands` or `Commands` traits but manual
+command creation is also possible. The `TypedCommands` trait provides pre-specified and opinionated return value types to commands,
+but if you want to use other return value types, you can use `Commands` as long as the chosen return value type
+implements the `FromRedisValue` trait.
+
+```rust
+use redis::TypedCommands;
+
+fn fetch_an_integer() -> redis::RedisResult<isize> {
+	// connect to redis
+	let client = redis::Client::open("redis://127.0.0.1/")?;
+	let mut con = client.get_connection()?;
+	// `set` returns a `()`, so we don't need to specify the return type manually unlike in the previous example.
+	con.set("my_key", 42)?;
+	// `get_int` returns Option<isize>, as the key may not be found.
+	con.get_int("my_key").unwrap()
+}
+```
 
 ```rust
 use redis::Commands;
@@ -50,41 +66,20 @@ Variables are converted to and from the Redis format for a wide variety of types
 you can implement the `FromRedisValue` and `ToRedisArgs` traits, or derive it with the
 [redis-macros](https://github.com/daniel7grant/redis-macros/#json-wrapper-with-redisjson) crate.
 
-If you wish to avoid having to specify a return type for every command, you can use the `TypedCommands` trait instead,
-which has
-pre-specified and opinionated return types.
-
-```rust
-use redis::TypedCommands;
-
-fn fetch_an_integer() -> redis::RedisResult<isize> {
-	// connect to redis
-	let client = redis::Client::open("redis://127.0.0.1/")?;
-	let mut con = client.get_connection()?;
-	// `set` returns a `()`, so we don't need to specify the return type manually unlike in the previous example.
-	con.set("my_key", 42)?;
-	// `get_int` returns Option<isize>, as the key may not be found.
-	con.get_int("my_key").unwrap()
-}
-```
-
 ## Async support
 
 To enable asynchronous clients, enable the relevant feature in your Cargo.toml,
-`tokio-comp` for tokio users, `smol-comp` for smol users, or `async-std-comp` for async-std users.
+`tokio-comp` for tokio users, `smol-comp` for smol users.
 
 ```
 # if you use tokio
-redis = { version = "0.32.4", features = ["tokio-comp"] }
+redis = { version = "1.0.0-rc.3", features = ["tokio-comp"] }
 
 # if you use smol
-redis = { version = "0.32.4", features = ["smol-comp"] }
-
-# if you use async-std
-redis = { version = "0.32.4", features = ["async-std-comp"] }
+redis = { version = "1.0.0-rc.3", features = ["smol-comp"] }
 ```
 
-You can then use either the `AsyncCommands` or `AsyncTypedCommands` trait. All async connections are cheap to clone, and clones can be used concurrently from multiple threads.
+You can then use either the `AsyncTypedCommands` or `AsyncCommands` traits. All async connections are cheap to clone, and clones can be used concurrently from multiple threads.
 
 ## Connection Pooling
 
@@ -92,7 +87,7 @@ When using a sync connection, it is recommended to use a connection pool in orde
 disconnects or multi-threaded usage. This can be done using the `r2d2` feature.
 
 ```
-redis = { version = "0.32.4", features = ["r2d2"] }
+redis = { version = "1.0.0-rc.3", features = ["r2d2"] }
 ```
 
 For async connections, connection pooling isn't necessary, unless blocking commands are used.
@@ -114,31 +109,25 @@ Currently, `native-tls` and `rustls` are supported.
 To use `native-tls`:
 
 ```
-redis = { version = "0.32.4", features = ["tls-native-tls"] }
+redis = { version = "1.0.0-rc.3", features = ["tls-native-tls"] }
 
 # if you use tokio
-redis = { version = "0.32.4", features = ["tokio-native-tls-comp"] }
+redis = { version = "1.0.0-rc.3", features = ["tokio-native-tls-comp"] }
 
 # if you use smol
-redis = { version = "0.32.4", features = ["smol-native-tls-comp"] }
-
-# if you use async-std
-redis = { version = "0.32.4", features = ["async-std-native-tls-comp"] }
+redis = { version = "1.0.0-rc.3", features = ["smol-native-tls-comp"] }
 ```
 
 To use `rustls`:
 
 ```
-redis = { version = "0.32.4", features = ["tls-rustls"] }
+redis = { version = "1.0.0-rc.3", features = ["tls-rustls"] }
 
 # if you use tokio
-redis = { version = "0.32.4", features = ["tokio-rustls-comp"] }
+redis = { version = "1.0.0-rc.3", features = ["tokio-rustls-comp"] }
 
 # if you use smol
-redis = { version = "0.32.4", features = ["smol-rustls-comp"] }
-
-# if you use async-std
-redis = { version = "0.32.4", features = ["async-std-rustls-comp"] }
+redis = { version = "1.0.0-rc.3", features = ["smol-rustls-comp"] }
 ```
 
 Add `rustls` to dependencies
@@ -173,13 +162,11 @@ To enable insecure mode, append `#insecure` at the end of the URL:
 let client = redis::Client::open("rediss://127.0.0.1/#insecure")?;
 ```
 
-**Deprecation Notice:** If you were using the `tls` or `async-std-tls-comp` features, please use the `tls-native-tls` or `async-std-native-tls-comp` features respectively.
-
 ## Cluster Support
 
 Support for Redis Cluster can be enabled by enabling the `cluster` feature in your Cargo.toml:
 
-`redis = { version = "0.32.4", features = [ "cluster"] }`
+`redis = { version = "1.0.0-rc.3", features = [ "cluster"] }`
 
 Then you can simply use the `ClusterClient`, which accepts a list of available nodes. Note
 that only one node in the cluster needs to be specified when instantiating the client, though
@@ -187,34 +174,32 @@ you can specify multiple.
 
 ```rust
 use redis::cluster::ClusterClient;
-use redis::Commands;
+use redis::TypedCommands;
 
 fn fetch_an_integer() -> String {
     let nodes = vec!["redis://127.0.0.1/"];
     let client = ClusterClient::new(nodes).unwrap();
     let mut connection = client.get_connection().unwrap();
-    let _: () = connection.set("test", "test_data").unwrap();
-    let rv: String = connection.get("test").unwrap();
-    return rv;
+    connection.set("test", "test_data").unwrap();
+    return connection.get("test").unwrap();
 }
 ```
 
 Async Redis Cluster support can be enabled by enabling the `cluster-async` feature, along
 with your preferred async runtime, e.g.:
 
-`redis = { version = "0.32.4", features = [ "cluster-async", "tokio-std-comp" ] }`
+`redis = { version = "1.0.0-rc.3", features = [ "cluster-async", "tokio-std-comp" ] }`
 
 ```rust
 use redis::cluster::ClusterClient;
-use redis::AsyncCommands;
+use redis::AsyncTypedCommands;
 
 async fn fetch_an_integer() -> String {
     let nodes = vec!["redis://127.0.0.1/"];
     let client = ClusterClient::new(nodes).unwrap();
     let mut connection = client.get_async_connection().await.unwrap();
-    let _: () = connection.set("test", "test_data").await.unwrap();
-    let rv: String = connection.get("test").await.unwrap();
-    return rv;
+    connection.set("test", "test_data").await.unwrap();
+    return connection.get("test").await.unwrap();
 }
 ```
 
@@ -222,7 +207,7 @@ async fn fetch_an_integer() -> String {
 
 Support for the RedisJSON Module can be enabled by specifying "json" as a feature in your Cargo.toml.
 
-`redis = { version = "0.32.4", features = ["json"] }`
+`redis = { version = "1.0.0-rc.3", features = ["json"] }`
 
 Then you can simply import the `JsonCommands` trait which will add the `json` commands to all Redis Connections (not to be confused with just `Commands` which only adds the default commands)
 
@@ -249,6 +234,10 @@ the results from the bytes. It will always be a `Vec`, if no results were found 
 be an empty `Vec`. If you want to handle deserialization and `Vec` unwrapping automatically,
 you can use the `Json` wrapper from the
 [redis-macros](https://github.com/daniel7grant/redis-macros/#json-wrapper-with-redisjson) crate.
+
+## Webassembly Support
+
+redis-rs tests that webassembly succesfully builds for the sync client work, but today async support isn't enabled, and the webassembly builds aren't tested against a database.
 
 ## Development
 
